@@ -5,13 +5,12 @@ package tea
 
 import "golang.org/x/sys/windows"
 
-// drainInput discards any pending console input events to remove unsolicited
-// terminal responses that arrived after the input reader was cancelled.
-// Without this, those bytes can be read by the user's shell after exit and
-// printed as garbage characters.
-func (p *Program) drainInput() {
+// tryKernelDrainTTY discards queued console input. Returns false when
+// [ttyInput] is nil or flushing fails so [drainPendingInput] can run.
+func (p *Program) tryKernelDrainTTY() bool {
 	if p.ttyInput == nil {
-		return
+		return false
 	}
-	_ = windows.FlushConsoleInputBuffer(windows.Handle(p.ttyInput.Fd()))
+	err := windows.FlushConsoleInputBuffer(windows.Handle(p.ttyInput.Fd()))
+	return err == nil
 }

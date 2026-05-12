@@ -5,27 +5,29 @@ package tea
 
 import "golang.org/x/sys/unix"
 
-// drainInput discards any pending input on the TTY. It is called during
-// shutdown to remove unsolicited terminal responses (e.g. DECRPM replies to
-// mode 2026/2027 queries) that arrived after the input reader was cancelled.
-// Without this, those bytes are read by the user's shell after exit and
-// printed as garbage characters.
-func (p *Program) drainInput() {
+// tryKernelDrainTTY flushes queued input on an ioctl-capable tty fd. Returns
+// true when the ioctl path succeeded (possibly after draining multiple bursts).
+// Returns false when [ttyInput] is nil or the fd is not ioctl-flushable,
+// prompting a deadline-based Read drain.
+func (p *Program) tryKernelDrainTTY() bool {
 	if p.ttyInput == nil {
-		return
+		return false
 	}
 	fd := int(p.ttyInput.Fd())
 	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}} //nolint:gosec // tty fd never overflows int32
 
-	// Responses can arrive in bursts, so flush, then poll, then flush
-	// again until nothing more arrives within the timeout window.
-	// FREAD (1) tells TIOCFLUSH to discard the read queue only.
 	for {
-		_ = unix.IoctlSetPointerInt(fd, unix.TIOCFLUSH, 1)
+		// FREAD (1) tells TIOCFLUSH to discard the read queue only.
+		if err := unix.IoctlSetPointerInt(fd, unix.TIOCFLUSH, 1); err != nil {
+			return false
+		}
 
 		n, err := unix.Poll(fds, drainTimeoutMs)
-		if err != nil || n <= 0 {
-			return
+		if err != nil {
+			return false
+		}
+		if n <= 0 {
+			return true
 		}
 	}
 }

@@ -3,6 +3,6 @@
 
 package tea
 
-// drainInput is a no-op on platforms where we don't have a portable way to
-// discard pending TTY input.
-func (p *Program) drainInput() {}
+// tryKernelDrainTTY is unavailable on these platforms — read-based drain handles
+// pending input where the reader supports SetReadDeadline.
+func (*Program) tryKernelDrainTTY() bool { return false }

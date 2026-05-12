@@ -1,13 +1,20 @@
 package tea
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/term"
 )
+
+// ttyInputDrainQuietMillis is how long we wait with no readable input while
+// draining (ioctl poll/read deadline). Mirrors the quiet window between
+// kernel flushes used on POSIX kernels.
+const ttyInputDrainQuietMillis = 200
 
 func (p *Program) suspend() {
 	if err := p.releaseTerminal(true); err != nil {
@@ -43,6 +50,64 @@ func (p *Program) restoreTerminalState() error {
 	p.drainInput()
 
 	return p.restoreInput()
+}
+
+// drainInput clears pending unsolicited terminal replies (DECRPM, etc.).
+// It prefers flushing the kernel TTY queue via tryKernelDrainTTY (see drain_*.go);
+// when that does not apply or fails (e.g. input is terminal-like but not
+// ioctl-flushable), it falls back to a deadline-based Read loop on the active
+// input reader.
+func (p *Program) drainInput() {
+	if p.tryKernelDrainTTY() {
+		return
+	}
+	rd := p.drainReaderSource()
+	if rd == nil {
+		return
+	}
+	drainPendingInput(rd, ttyInputDrainQuietMillis*time.Millisecond)
+}
+
+func (p *Program) drainReaderSource() io.Reader {
+	if p.ttyInput != nil {
+		return p.ttyInput
+	}
+	return p.input
+}
+
+type timeoutError interface {
+	Timeout() bool
+	error
+}
+
+// drainPendingInput discards buffered input until silence exceeds [quiet].
+// Requires [rd] to support SetReadDeadline; otherwise this is a no-op.
+func drainPendingInput(rd io.Reader, quiet time.Duration) {
+	dl, ok := rd.(interface {
+		SetReadDeadline(time.Time) error
+	})
+	if !ok {
+		return
+	}
+
+	buf := make([]byte, 4096)
+	for {
+		_ = dl.SetReadDeadline(time.Now().Add(quiet))
+		n, err := rd.Read(buf)
+		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				return
+			}
+			var te timeoutError
+			if errors.As(err, &te) && te.Timeout() {
+				return
+			}
+			return
+		}
+		if n == 0 {
+			return
+		}
+	}
 }
 
 // restoreInput restores the tty input to its original state.
