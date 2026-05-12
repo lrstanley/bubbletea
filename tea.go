@@ -1109,9 +1109,12 @@ func (p *Program) Run() (returnModel Model, returnErr error) {
 	if !p.disableRenderer && shouldQuerySynchronizedOutput(p.environ) {
 		// Query for synchronized updates support (mode 2026) and unicode core
 		// (mode 2027). If the terminal supports it, the renderer will enable
-		// it once we get the response.
+		// it once we get the response. Flush immediately after enqueueing so
+		// replies can drain while input is still active; a delayed flush after
+		// input cancel can wedge Kill on emulators that answer into the reader.
 		p.execute(ansi.RequestModeSynchronizedOutput +
 			ansi.RequestModeUnicodeCore)
+		_ = p.flush()
 	}
 
 	// Initialize the program.
